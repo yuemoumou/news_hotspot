@@ -61,7 +61,7 @@ def save_news(news_list):
             # 保存新闻
             # ------------------
 
-            conn.execute(
+            cursor = conn.execute(
             """
             INSERT INTO news(
 
@@ -98,8 +98,10 @@ def save_news(news_list):
             )
             )
 
+            news_id = cursor.lastrowid
+
             # ------------------
-            # FTS同步
+            # FTS同步（显式指定 rowid = news.id，保证搜索时行号一致）
             # ------------------
 
             try:
@@ -107,15 +109,17 @@ def save_news(news_list):
                 conn.execute(
                     """
                     INSERT INTO news_fts(
+                        rowid,
                         title,
                         source,
                         url
                     )
                     VALUES(
-                        ?,?,?
+                        ?,?,?,?
                     )
                     """,
                     (
+                        news_id,
                         item["title"],
                         item.get(
                             "source",

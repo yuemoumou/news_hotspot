@@ -19,10 +19,10 @@ USING fts5(
 )
 """)
 
-# 导入数据
+# 导入数据（显式指定 rowid = news.id，保证搜索时行号一致）
 cursor.execute("""
-INSERT INTO news_fts(title,source,url)
-SELECT title,source,url
+INSERT INTO news_fts(rowid, title, source, url)
+SELECT id, title, source, url
 FROM news
 """)
 

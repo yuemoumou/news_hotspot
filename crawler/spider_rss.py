@@ -1,4 +1,5 @@
 import feedparser
+import requests
 
 
 def crawl_rss(
@@ -6,9 +7,14 @@ def crawl_rss(
     source_name
 ):
 
-    feed = feedparser.parse(
-        url
-    )
+    # 用 requests 先获取内容（带超时），再交给 feedparser 解析
+    try:
+        resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        feed = feedparser.parse(resp.content)
+    except Exception as e:
+        print(f"RSS抓取失败 [{source_name}]: {e}")
+        return []
 
     news = []
 

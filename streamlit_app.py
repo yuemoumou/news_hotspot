@@ -221,6 +221,9 @@ LIMIT 100
 
 for row in rows:
 
+    # 记录浏览
+    record_view(row["id"])
+
     col1, col2, col3 = st.columns(
         [7, 1, 1]
     )

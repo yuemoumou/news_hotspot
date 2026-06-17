@@ -1,19 +1,26 @@
 """
-数据分析中心
-- 来源占比分析（饼图）
-- 新闻增长趋势（折线图）
-- 24小时新闻分布（柱状图）
-- 热词趋势分析
-- RSS源统计
-- 分类统计
+数据分析中心（整合版）
+- KPI 概览卡片
+- 热点关键词分析（加权分数）
+- 来源分布分析
+- 24小时新闻分布
+- 新闻增长趋势（含移动平均线）
+- 分类统计 & RSS源统计
+- 热词趋势对比
+
+整合自：2_热点统计.py + 6_数据分析.py
 """
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from database.db import get_conn
+from services.hot_service import (
+    get_hot_keywords_with_score,
+)
+from services.trend_service import keyword_trend, get_hot_keywords
 
 st.set_page_config(page_title="数据分析中心", page_icon="📊", layout="wide")
 
@@ -22,7 +29,7 @@ st.title("📊 数据分析中心")
 conn = get_conn()
 
 # ============================================================
-# 顶部 KPI 卡片
+# 1. KPI 概览卡片（来自 6_数据分析.py）
 # ============================================================
 
 total = conn.execute("SELECT COUNT(*) FROM news").fetchone()[0]
@@ -49,7 +56,78 @@ kpi6.metric("AI覆盖率", f"{ai_analyzed*100//total if total else 0}%")
 st.divider()
 
 # ============================================================
-# Row 1: 来源占比 + 24小时分布
+# 2. 热点关键词（来自 2_热点统计.py — 加权分数方案）
+# ============================================================
+
+st.subheader("🔥 热点关键词分析")
+
+kw_col1, kw_col2 = st.columns([2, 1])
+
+with kw_col1:
+    kw_days = st.selectbox("统计时间范围", [1, 3, 7, 14, 30], index=2, key="hot_days")
+
+with kw_col2:
+    top_n = st.selectbox("显示数量", [10, 20, 50], index=1, key="top_n")
+
+hot_data = get_hot_keywords_with_score(limit=top_n, days=kw_days)
+
+if hot_data:
+    df_hot = pd.DataFrame(hot_data)
+
+    col_a, col_b = st.columns([2, 1])
+
+    with col_a:
+        # 横向柱状图（加权分数）
+        df_display = df_hot.head(top_n).sort_values("score", ascending=True)
+        fig = px.bar(
+            df_display,
+            y="keyword",
+            x="score",
+            orientation="h",
+            title=f"热点关键词权重（近 {kw_days} 天）",
+            labels={"keyword": "关键词", "score": "权重分数"},
+            color="count",
+            color_continuous_scale="reds",
+            text="count"
+        )
+        fig.update_traces(
+            texttemplate="%{text}篇",
+            textposition="outside"
+        )
+        fig.update_layout(
+            height=max(400, top_n * 20),
+            yaxis=dict(autorange="reversed")
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col_b:
+        st.subheader("关键词排名")
+        st.dataframe(
+            df_hot.rename(columns={
+                "keyword": "关键词",
+                "score": "权重",
+                "count": "出现篇数"
+            }).head(top_n),
+            use_container_width=True,
+            hide_index=True,
+            height=400
+        )
+
+        # CSV 下载
+        csv = df_hot.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "📥 下载CSV",
+            csv,
+            f"hot_keywords_{kw_days}d.csv",
+            "text/csv"
+        )
+else:
+    st.warning("暂无关键词数据")
+
+st.divider()
+
+# ============================================================
+# 3. 来源分析（来自 6_数据分析.py — 环形图 + 小来源合并）
 # ============================================================
 
 row1_col1, row1_col2 = st.columns(2)
@@ -57,17 +135,20 @@ row1_col1, row1_col2 = st.columns(2)
 with row1_col1:
     st.subheader("📡 新闻来源占比")
 
+    # 使用独立连接确保读到最新数据（避免 WAL 模式快照隔离导致数据滞后）
+    conn_fresh = get_conn()
     df_source = pd.read_sql_query("""
         SELECT source, COUNT(*) as count
         FROM news
         WHERE source IS NOT NULL AND source <> ''
         GROUP BY source
         ORDER BY count DESC
-    """, conn)
+    """, conn_fresh)
+    conn_fresh.close()
 
     if not df_source.empty:
         # 小来源合并为"其他"
-        threshold = df_source["count"].sum() * 0.02  # 2% 以下合并
+        threshold = df_source["count"].sum() * 0.02
         df_display = df_source.copy()
         other_mask = df_display["count"] < threshold
         if other_mask.any():
@@ -99,6 +180,10 @@ with row1_col1:
             hide_index=True
         )
 
+# ============================================================
+# 4. 24小时新闻分布（来自 6_数据分析.py）
+# ============================================================
+
 with row1_col2:
     st.subheader("🕐 24小时新闻分布")
 
@@ -111,7 +196,6 @@ with row1_col2:
     """, conn)
 
     if not df_hour.empty:
-        # 确保 0-23 小时完整
         all_hours = pd.DataFrame({"hour": [f"{h:02d}" for h in range(24)]})
         df_hour_full = all_hours.merge(df_hour, on="hour", how="left").fillna(0)
         df_hour_full["count"] = df_hour_full["count"].astype(int)
@@ -134,7 +218,7 @@ with row1_col2:
 st.divider()
 
 # ============================================================
-# Row 2: 新闻增长趋势
+# 5. 新闻增长趋势（来自 6_数据分析.py — 含移动平均线）
 # ============================================================
 
 st.subheader("📈 新闻增长趋势")
@@ -161,7 +245,6 @@ df_daily = pd.read_sql_query(f"""
 
 with trend_col2:
     if not df_daily.empty:
-        # 计算移动平均
         df_daily["ma7"] = df_daily["count"].rolling(window=7, min_periods=1).mean().round(1)
 
         fig_trend = go.Figure()
@@ -199,7 +282,7 @@ with trend_col2:
 st.divider()
 
 # ============================================================
-# Row 3: 分类统计 + RSS源统计
+# 6. 分类统计 & RSS源统计（来自 6_数据分析.py）
 # ============================================================
 
 row3_col1, row3_col2 = st.columns(2)
@@ -281,21 +364,19 @@ with row3_col2:
 st.divider()
 
 # ============================================================
-# Row 4: 热词趋势
+# 7. 热词趋势对比（来自 6_数据分析.py）
 # ============================================================
 
-st.subheader("🔥 热词趋势分析")
-
-from services.trend_service import keyword_trend, get_hot_keywords
+st.subheader("🔥 热词趋势对比")
 
 hot_words = get_hot_keywords(days=7)
 
 if hot_words:
-    trend_col1, trend_col2 = st.columns([1, 4])
+    trend_col_a, trend_col_b = st.columns([1, 4])
 
     hot_word_list = [w for w, _ in hot_words[:20]]
 
-    with trend_col1:
+    with trend_col_a:
         selected_trend_words = st.multiselect(
             "选择关键词（可多选）",
             hot_word_list,
@@ -303,7 +384,7 @@ if hot_words:
             key="trend_words"
         )
 
-    with trend_col2:
+    with trend_col_b:
         if selected_trend_words:
             fig_multi = go.Figure()
             for word in selected_trend_words:
